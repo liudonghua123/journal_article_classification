@@ -6,6 +6,7 @@
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -16,6 +17,14 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, model_validator, Field
 from fastmcp import FastMCP
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 # 加载环境变量
 load_dotenv()
@@ -64,10 +73,16 @@ async def query_science_api(keyword: str, year: int = 2019) -> List[Dict[str, An
     api_base = FENQUBIAO_API_V2 if year >= 2019 else FENQUBIAO_API_V1
     url = f"{api_base}/search?year={year}&keyword={keyword}&user={FENQUBIAO_USER}&password={FENQUBIAO_PASSWORD}"
 
+    # 记录请求信息（隐藏密码）
+    safe_url = f"{api_base}/search?year={year}&keyword={keyword}&user={FENQUBIAO_USER}&password=***"
+    logger.info(f"[Science API] 发送请求 - URL: {safe_url}")
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(url)
         response.raise_for_status()
         data = response.json()
+
+    logger.info(f"[Science API] 响应内容: {json.dumps(data, ensure_ascii=False, indent=2)[:1000]}")
 
     if not isinstance(data, list):
         return []
@@ -80,10 +95,16 @@ async def get_science_detail(journal_name: str, year: int = 2019) -> Optional[Di
     api_base = FENQUBIAO_API_V2 if year >= 2019 else FENQUBIAO_API_V1
     url = f"{api_base}/get?year={year}&keyword={journal_name}&user={FENQUBIAO_USER}&password={FENQUBIAO_PASSWORD}"
 
+    # 记录请求信息（隐藏密码）
+    safe_url = f"{api_base}/get?year={year}&keyword={journal_name}&user={FENQUBIAO_USER}&password=***"
+    logger.info(f"[Science Detail API] 发送请求 - URL: {safe_url}")
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(url)
         response.raise_for_status()
         data = response.json()
+
+    logger.info(f"[Science Detail API] 响应内容: {json.dumps(data, ensure_ascii=False, indent=2)[:1000]}")
 
     if not data or not data.get("Title"):
         return None
@@ -140,16 +161,21 @@ async def query_journals(
         JournalQueryResponse {"total": int, "results": [...]}
     """
     if request.journal_type == "social":
+        logger.info(f"[Query] 类型: social, 关键词: {request.name}, 年份: {request.year}, 限制: {request.limit}")
         results = query_social_local(name=request.name, year=request.year, limit=request.limit)
+        logger.info(f"[Query] 返回 {len(results)} 条结果")
         return JournalQueryResponse(total=len(results), results=results)
 
     elif request.journal_type == "science":
+        logger.info(f"[Query] 类型: science, 关键词: {request.name}, 年份: {request.year}, 限制: {request.limit}")
         try:
             name_list = await query_science_api(keyword=request.name, year=request.year)
         except Exception as e:
+            logger.error(f"[Query] API 请求失败: {str(e)}")
             return JournalQueryResponse(total=0, results=[], error=str(e))
 
         if not name_list:
+            logger.info("[Query] 未找到匹配的期刊")
             return JournalQueryResponse(total=0, results=[])
 
         results = []
@@ -162,8 +188,10 @@ async def query_journals(
                 # 单个期刊详情获取失败不影响其他结果
                 continue
 
+        logger.info(f"[Query] 返回 {len(results)} 条结果")
         return JournalQueryResponse(total=len(results), results=results)
 
+    logger.warning(f"[Query] 无效的期刊类型: {request.journal_type}")
     return JournalQueryResponse(total=0, results=[], error="Invalid journal_type. Use 'science' or 'social'")
 
 # ============== MCP Server ==============
