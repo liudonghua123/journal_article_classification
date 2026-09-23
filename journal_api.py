@@ -138,8 +138,18 @@ class DMPClient:
             logger.error(f"[DMP] 错误: {e}")
             return None
 
-    async def fetch_page(self, endpoint: str, page: int = 1, per_page: int = 100) -> Optional[Dict[str, Any]]:
-        """获取单页数据"""
+    async def fetch_page(
+        self,
+        endpoint: str,
+        page: int = 1,
+        per_page: int = 100,
+        year: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """获取单页数据
+
+        Args:
+            year: 年份（可选，支持逗号分隔的多个年份，如 '2023,2024'）
+        """
         token = await self.get_access_token()
         if not token:
             logger.error("[DMP] 无法获取access_token")
@@ -152,9 +162,29 @@ class DMPClient:
             "per_page": per_page
         }
 
+        # 如果有 year 参数，使用 POST 请求体传递过滤条件
+        json_data = None
+        if year:
+            year_list = [int(y.strip()) for y in year.split(",") if y.strip()]
+            if year_list:
+                json_data = {
+                    "NF": {
+                        "in": year_list
+                    }
+                }
+                # 使用 POST 请求
+                method = "post"
+            else:
+                method = "get"
+        else:
+            method = "get"
+
         try:
             client = await self._get_client()
-            response = await client.get(url, params=params)
+            if method == "post":
+                response = await client.post(url, params=params, json=json_data)
+            else:
+                response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
 
@@ -180,14 +210,19 @@ class DMPClient:
         self,
         endpoint: str,
         log_prefix: str = "[DMP]",
-        progress_callback: Optional[Callable[[int, int], None]] = None
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        year: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """全量获取数据（分页）"""
+        """全量获取数据（分页）
+
+        Args:
+            year: 年份（可选，支持逗号分隔的多个年份，如 '2023,2024'）
+        """
         per_page = 2000  # 每页最多2000条
 
         # 先请求第一页获取元数据（total）
         logger.info(f"{log_prefix} 获取元数据（第一页）...")
-        first_result = await self.fetch_page(endpoint, 1, per_page)
+        first_result = await self.fetch_page(endpoint, 1, per_page, year)
 
         if first_result is None:
             logger.error(f"{log_prefix} 获取第一页数据失败")
@@ -204,12 +239,12 @@ class DMPClient:
         for page in range(1, max_page + 1):
             logger.info(f"{log_prefix} 请求第 {page}/{max_page} 页...")
 
-            result = await self.fetch_page(endpoint, page, per_page)
+            result = await self.fetch_page(endpoint, page, per_page, year)
 
             if result is None:
                 logger.error(f"{log_prefix} 获取第 {page} 页失败，尝试重试...")
                 await asyncio.sleep(2)
-                result = await self.fetch_page(endpoint, page, per_page)
+                result = await self.fetch_page(endpoint, page, per_page, year)
                 if result is None:
                     logger.error(f"{log_prefix} 重试失败，停止获取")
                     break
@@ -430,18 +465,21 @@ class JournalDataManager:
     def search_natural_science(
         self,
         name: str,
-        year: Optional[int] = None,
+        year: Optional[str] = None,
         limit: int = 100
     ) -> List[Dict[str, Any]]:
-        """搜索自然科学期刊"""
+        """搜索自然科学期刊（支持逗号分隔的多个年份，如 '2023,2024'）"""
         if not self._all_natural:
             logger.warning("[DataManager] 自然科学期刊数据未加载")
             return []
 
         # 确定搜索范围
         if year is not None:
-            year_str = str(year)
-            search_data = self.natural_science_journals.get(year_str, [])
+            # 支持逗号分隔的多个年份
+            year_list = [y.strip() for y in year.split(",") if y.strip()]
+            search_data = []
+            for y in year_list:
+                search_data.extend(self.natural_science_journals.get(y, []))
             indices = self._fuzzy_search(name, search_data)
             results = [search_data[i] for i in indices]
         else:
@@ -455,21 +493,25 @@ class JournalDataManager:
     def search_social_science(
         self,
         name: str,
-        year: Optional[int] = None,
+        year: Optional[str] = None,
         limit: int = 100
     ) -> List[Dict[str, Any]]:
-        """搜索社会科学期刊"""
+        """搜索社会科学期刊（支持逗号分隔的多个年份，如 '2023,2024'）"""
         if not self._all_social:
             logger.warning("[DataManager] 社会科学期刊数据未加载")
             return []
 
         # 确定搜索范围
         if year is not None:
-            year_str = str(year)
-            search_data = self.social_science_journals.get(year_str, [])
+            # 支持逗号分隔的多个年份
+            year_list = [y.strip() for y in year.split(",") if y.strip()]
+            search_data = []
+            for y in year_list:
+                search_data.extend(self.social_science_journals.get(y, []))
             indices = self._fuzzy_search(name, search_data)
             results = [search_data[i] for i in indices]
         else:
+            # 搜索所有年份
             indices = self._fuzzy_search(name, self._all_social)
             results = [self._all_social[i] for i in indices]
 
@@ -621,7 +663,7 @@ class JournalQueryRequest(BaseModel):
     """期刊查询请求模型"""
     journal_type: str = Field(..., pattern="^(science|social)$", description="期刊类型: science(自然科学) 或 social(社会科学)")
     name: str = Field(..., min_length=1, description="期刊名称关键词（必填，模糊匹配）")
-    year: Optional[int] = Field(None, description="年份（可选）")
+    year: Optional[str] = Field(None, description="年份（可选，支持逗号分隔的多个年份，如 '2023,2024'）")
     limit: int = Field(100, ge=1, le=500, description="返回数量限制")
 
 class JournalQueryResponse(BaseModel):
@@ -653,7 +695,7 @@ mcp = FastMCP("Journal Classification")
 async def query_journals_tool(
     journal_type: str,
     name: str,
-    year: int = None,
+    year: str = None,
     limit: int = 100
 ) -> Dict[str, Any]:
     """
@@ -661,8 +703,8 @@ async def query_journals_tool(
 
     Args:
         journal_type: 期刊类型 - "science" (自然科学) 或 "social" (社会科学)
-        name: 期刊名称关键词（必填）
-        year: 年份（可选，不填则搜索所有年份）
+        name: 期刊名称关键词（必填，模糊匹配）
+        year: 年份（可选，支持逗号分隔的多个年份，如 '2023,2024'，不填则搜索所有年份）
         limit: 返回数量限制 (默认100)
     """
     request = JournalQueryRequest(
@@ -747,7 +789,7 @@ async def get_status():
 async def query_journals_api(
     journal_type: str = Query(..., pattern="^(science|social)$", description="期刊类型: science(自然科学) 或 social(社会科学)"),
     name: str = Query(..., min_length=1, description="期刊名称关键词（必填）"),
-    year: Optional[int] = Query(None, description="年份（可选）"),
+    year: Optional[str] = Query(None, description="年份（可选，支持逗号分隔的多个年份，如 '2023,2024'）"),
     limit: int = Query(100, ge=1, le=500, description="返回数量限制")
 ):
     """
