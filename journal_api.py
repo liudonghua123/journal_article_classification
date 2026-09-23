@@ -377,28 +377,19 @@ class JournalDataManager:
                         index[prefix] = []
                     index[prefix].append(i)
 
-    def _fuzzy_search(self, keyword: str, index: Dict[str, List[int]], data: List[Dict[str, Any]]) -> List[int]:
-        """基于索引的模糊搜索"""
+    def _fuzzy_search(self, keyword: str, data: List[Dict[str, Any]]) -> List[int]:
+        """基于索引的模糊搜索，不区分大小写，name 中精确包含 keyword"""
         keyword_lower = keyword.lower().strip()
         if not keyword_lower:
             return []
 
-        candidates = set()
+        candidates = []
+        for i, item in enumerate(data):
+            name = item.get("name", "").lower()
+            if keyword_lower in name:
+                candidates.append(i)
 
-        # 1. 精确前缀匹配
-        for length in range(3, len(keyword_lower) + 1):
-            prefix = keyword_lower[:length]
-            if prefix in index:
-                candidates.update(index[prefix])
-
-        # 2. 如果前缀匹配结果太少，进行全文搜索
-        if len(candidates) < 10:
-            for i, item in enumerate(data):
-                name = item.get("name", "").lower()
-                if keyword_lower in name:
-                    candidates.add(i)
-
-        return list(candidates)
+        return candidates
 
     def set_natural_science_data(self, data: List[Dict[str, Any]]):
         """设置自然科学期刊数据"""
@@ -451,14 +442,11 @@ class JournalDataManager:
         if year is not None:
             year_str = str(year)
             search_data = self.natural_science_journals.get(year_str, [])
-            # 重建该年份的临时索引
-            temp_index = {}
-            self._build_index(search_data, temp_index, "name")
-            indices = self._fuzzy_search(name, temp_index, search_data)
+            indices = self._fuzzy_search(name, search_data)
             results = [search_data[i] for i in indices]
         else:
             # 搜索所有年份
-            indices = self._fuzzy_search(name, self._natural_index, self._all_natural)
+            indices = self._fuzzy_search(name, self._all_natural)
             results = [self._all_natural[i] for i in indices]
 
         logger.info(f"[DataManager] 自然科学搜索: name='{name}', year={year}, 找到 {len(results)} 条")
@@ -479,12 +467,10 @@ class JournalDataManager:
         if year is not None:
             year_str = str(year)
             search_data = self.social_science_journals.get(year_str, [])
-            temp_index = {}
-            self._build_index(search_data, temp_index, "name")
-            indices = self._fuzzy_search(name, temp_index, search_data)
+            indices = self._fuzzy_search(name, search_data)
             results = [search_data[i] for i in indices]
         else:
-            indices = self._fuzzy_search(name, self._social_index, self._all_social)
+            indices = self._fuzzy_search(name, self._all_social)
             results = [self._all_social[i] for i in indices]
 
         logger.info(f"[DataManager] 社会科学搜索: name='{name}', year={year}, 找到 {len(results)} 条")
